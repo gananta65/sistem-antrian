@@ -1,0 +1,257 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sistem-antrian
+---
+# Secret Laravel env
+apiVersion: v1
+kind: Secret
+metadata:
+  name: laravel-env
+  namespace: sistem-antrian
+type: Opaque
+stringData:
+  APP_KEY: base64:dxM1ba7lSCRzfZTd6wYCEoe30JWr4kt4gznYDrhNAW8=
+  APP_ENV: production
+  APP_DEBUG: "false"
+  DB_CONNECTION: pgsql
+  DB_HOST: sistem-antrian-db
+  DB_PORT: "5432"
+  DB_DATABASE: sistem_antrian
+  DB_USERNAME: gananta
+  DB_PASSWORD: aaaa1111
+---
+# PVC PostgreSQL
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sistem-antrian-db-pvc
+  namespace: sistem-antrian
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Deployment PostgreSQL
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sistem-antrian-db
+  namespace: sistem-antrian
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sistem-antrian-db
+  template:
+    metadata:
+      labels:
+        app: sistem-antrian-db
+    spec:
+      containers:
+        - name: db
+          image: postgres:16
+          env:
+            - name: POSTGRES_DB
+              value: sistem_antrian
+            - name: POSTGRES_USER
+              value: gananta
+            - name: POSTGRES_PASSWORD
+              value: aaaa1111
+          ports:
+            - containerPort: 5432
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: db-storage
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: db-storage
+          persistentVolumeClaim:
+            claimName: sistem-antrian-db-pvc
+---
+# Service PostgreSQL
+apiVersion: v1
+kind: Service
+metadata:
+  name: sistem-antrian-db
+  namespace: sistem-antrian
+spec:
+  type: ClusterIP
+  selector:
+    app: sistem-antrian-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+# Deployment Laravel API (FPM 9000)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sistem-antrian-api
+  namespace: sistem-antrian
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sistem-antrian-api
+  template:
+    metadata:
+      labels:
+        app: sistem-antrian-api
+    spec:
+      containers:
+        - name: api
+          image: gananta65/infra-api:latest
+          envFrom:
+            - secretRef:
+                name: laravel-env
+          ports:
+            - containerPort: 9000
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "400m"
+              memory: "512Mi"
+---
+# Service Laravel API
+apiVersion: v1
+kind: Service
+metadata:
+  name: sistem-antrian-api
+  namespace: sistem-antrian
+spec:
+  type: ClusterIP
+  selector:
+    app: sistem-antrian-api
+  ports:
+    - port: 9000
+      targetPort: 9000
+---
+# Job migrate
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sistem-antrian-migrate
+  namespace: sistem-antrian
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: gananta65/infra-api:latest
+          envFrom:
+            - secretRef:
+                name: laravel-env
+          command: ["php", "artisan", "migrate", "--force"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+---
+# ConfigMap Nginx
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sistem-antrian-nginx-conf
+  namespace: sistem-antrian
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name antrian.gananta.com;
+
+        root /var/www/html/public;
+        index index.php index.html;
+
+        location / {
+            try_files $uri $uri/ /index.php?$query_string;
+        }
+
+        location ~ \.php$ {
+            include fastcgi_params;
+            fastcgi_pass sistem-antrian-api:9000;
+            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            fastcgi_index index.php;
+        }
+    }
+---
+# Deployment Nginx reverse proxy
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sistem-antrian-nginx
+  namespace: sistem-antrian
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sistem-antrian-nginx
+  template:
+    metadata:
+      labels:
+        app: sistem-antrian-nginx
+    spec:
+      containers:
+        - name: nginx
+          image: gananta65/sistem-antrian-nginx:latest
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: sistem-antrian-nginx-conf
+---
+# Service Nginx
+apiVersion: v1
+kind: Service
+metadata:
+  name: sistem-antrian-nginx
+  namespace: sistem-antrian
+spec:
+  type: ClusterIP
+  selector:
+    app: sistem-antrian-nginx
+  ports:
+    - port: 80
+      targetPort: 80
+---
+# Ingress Traefik
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sistem-antrian-api-ingress
+  namespace: sistem-antrian
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  rules:
+    - host: antrian.gananta.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sistem-antrian-nginx
+                port:
+                  number: 80

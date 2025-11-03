@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_DB: sistem_antrian
+      POSTGRES_USER: gananta
+      POSTGRES_PASSWORD: aaaa1111
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: ../api-laravel
+      dockerfile: Dockerfile
+    container_name: api-laravel
+    environment:
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: sistem_antrian
+      DB_USERNAME: gananta
+      DB_PASSWORD: aaaa1111
+    volumes:
+      - ../api-laravel:/var/www/html
+    depends_on:
+      - postgres
+    ports:
+      - "8000:8000"
+    command: php artisan serve --host=0.0.0.0 --port=8000
+    user: "${UID}:${GID}"
+
+  frontend:
+    build:
+      context: ../frontend-next
+      dockerfile: Dockerfile
+    container_name: frontend-next
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    volumes:
+      - ../frontend-next:/app
+    ports:
+      - "3000:3000"
+    command: npm run dev
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+

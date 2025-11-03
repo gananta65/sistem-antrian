@@ -1,0 +1,40 @@
+# Dockerfile.prod - Laravel API Production
+# Base image PHP 8.3 FPM
+FROM php:8.3-fpm
+
+# Set working directory
+WORKDIR /var/www/html
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git curl libpq-dev zip unzip ca-certificates && \
+    docker-php-ext-install pdo pdo_pgsql && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Composer
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+# Copy composer files & artisan first (untuk post-autoload-dump hook)
+COPY composer.json composer.lock artisan ./
+
+# Copy folders yang diperlukan saat composer install
+COPY app/ app/
+COPY config/ config/
+COPY database/ database/
+COPY routes/ routes/
+COPY bootstrap/ bootstrap/
+
+# Install PHP dependencies production-only
+RUN composer install --no-dev --optimize-autoloader
+
+# Copy remaining files (public, resources, storage, etc.)
+COPY . .
+
+# Set permissions untuk folder storage & bootstrap/cache
+RUN chown -R www-data:www-data storage bootstrap/cache
+
+# Expose PHP-FPM port
+EXPOSE 9000
+
+# Run PHP-FPM
+CMD ["php-fpm"]
